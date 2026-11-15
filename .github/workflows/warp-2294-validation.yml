@@ -1,0 +1,73 @@
+name: Warp 2294 CPU compiler validation
+
+on:
+  push:
+    branches: [ci/warp-2294-validation]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-compiler-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    env:
+      CUDA_VISIBLE_DEVICES: "-1"
+      WARP_ENABLE_MEMPOOLS_AT_INIT: "0"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+      BASE_SHA: 703efa7e2a489f7e97906e760b937064eff6150c
+    steps:
+      - name: Check out validation driver
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Preserve validation driver
+        run: cp tools/ci/validate_warp_2294.py "$RUNNER_TEMP/validate_warp_2294.py"
+      - name: Check out the proposed compiler change
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: learnrahulrai-ui/fix-forward-shared-memory
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: "0.13.6"
+      - name: Prepare Python and original compiler source
+        run: |
+          uv python install
+          uv sync --no-dev --no-install-project
+          mkdir -p evidence
+          git rev-parse HEAD | tee evidence/commit.txt
+          test "$(git rev-parse HEAD^)" = "$BASE_SHA"
+          cp warp/_src/context.py "$RUNNER_TEMP/fixed-context.py"
+          git show "$BASE_SHA:warp/_src/context.py" > warp/_src/context.py
+      - name: Build the unchanged CPU backend once
+        run: uv run --no-sync build_lib.py --no-cuda --no-use-libmathdx -j 2 > evidence/build-cpu.log 2>&1
+      - name: Confirm sizing assertions fail on original compiler
+        env:
+          WARP_CACHE_PATH: ${{ runner.temp }}/warp-2294-baseline-cache
+        run: uv run --no-sync python "$RUNNER_TEMP/validate_warp_2294.py" baseline --output evidence/baseline.json > evidence/baseline.log 2>&1
+      - name: Restore the proposed Python compiler change
+        run: cp "$RUNNER_TEMP/fixed-context.py" warp/_src/context.py
+      - name: Confirm sizing regressions pass with the fix
+        env:
+          WARP_CACHE_PATH: ${{ runner.temp }}/warp-2294-fixed-cache
+        run: uv run --no-sync python "$RUNNER_TEMP/validate_warp_2294.py" fixed --output evidence/fixed.json > evidence/fixed.log 2>&1
+      - name: Run the full existing codegen test module
+        env:
+          WARP_CACHE_PATH: ${{ runner.temp }}/warp-2294-fixed-cache
+        run: uv run --no-sync python "$RUNNER_TEMP/validate_warp_2294.py" codegen --output evidence/codegen.json > evidence/codegen.log 2>&1
+      - name: Check formatting and repository hooks
+        run: |
+          uvx pre-commit run --files warp/_src/context.py warp/tests/test_codegen.py changelog/2294.fixed.md > evidence/pre-commit.log 2>&1
+          git diff --exit-code -- warp/_src/context.py warp/tests/test_codegen.py changelog/2294.fixed.md
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: warp-2294-cpu-compiler-evidence
+          path: evidence/
+          retention-days: 7
