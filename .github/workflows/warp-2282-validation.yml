@@ -38,14 +38,14 @@ jobs:
       - name: Prepare Python and evidence
         run: |
           uv python install
-          uv sync --no-dev
+          uv sync --no-dev --no-install-project
           mkdir -p evidence
           git rev-parse HEAD | tee evidence/commit.txt
           test "$(git rev-parse HEAD^)" = "$BASE_SHA"
           cp warp/native/tile.h "$RUNNER_TEMP/fixed-tile.h"
           git show "$BASE_SHA:warp/native/tile.h" > warp/native/tile.h
       - name: Build original CPU backend
-        run: uv run build_lib.py --no-cuda --no-use-libmathdx -j 2 > evidence/build-baseline.log 2>&1
+        run: uv run --no-sync build_lib.py --no-cuda --no-use-libmathdx -j 2 > evidence/build-baseline.log 2>&1
       - name: Confirm regression assertions fail on original source
         env:
           WARP_CACHE_PATH: ${{ runner.temp }}/warp-2282-baseline-cache
